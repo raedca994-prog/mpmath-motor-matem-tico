@@ -1,0 +1,22 @@
+# Cantidad exacta de primos <= x (Criba de Eratóstenes simple)
+es_primo = [True] * (x + 1)
+es_primo[0:2] = [False, False]
+for i in range(2, int(math.isqrt(x)) + 1):
+    if es_primo[i]:
+        es_primo[i*i : x+1 : i] = [False] * len(range(i*i, x+1, i))
+pi_x = sum(es_primo)
+
+# Integral logarítmica Li(x)
+li_x = float(mp.li(x))
+
+# Error real vs. Cota máxima de Schoenfeld
+error_real = abs(pi_x - li_x)
+cota_maxima = (1 / (8 * math.pi)) * math.sqrt(x) * math.log(x)
+
+print(f"Para x = {x:,}:")
+print(f"  Primos reales pi(x):   {pi_x:,}")
+print(f"  Estimación Li(x):      {li_x:,.2f}")
+print(f"  Error real |pi - Li|:  {error_real:,.2f}")
+print(f"  Margen máximo teórico: {cota_maxima:,.2f}")
+print(f"  ¿Cumple la cota?:      {error_real < cota_maxima}\n")psi_x = x - suma_ceros - mp.log(2 * mp.pi) - 0.5 * mp.log(1 - x**(-2))
+return float(mp.re(psi_x))
