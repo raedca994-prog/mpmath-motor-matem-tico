@@ -1,0 +1,301 @@
+import ast
+import hashlib
+import inspect
+import json
+import math
+import time
+import tracemalloc
+from functools import wraps
+from typing import Any, Callable, Dict, List
+
+import numpy as np
+from mpmath import mp
+
+# Precisión decimal arbitraria para auditoría matemática (50 dígitos)
+mp.dps = 50
+
+
+class IntegrityAuditError(Exception):
+    """Error lanzado cuando una verificación matemática o de hash falla."""
+
+
+class SelfHealingCore:
+    """
+    Motor de resiliencia y aislamiento de fallos mediante reintentos con
+    backoff exponencial y registro de métricas de ejecución.
+    """
+
+    def __init__(self, max_retries: int = 2, base_delay: float = 0.05) -> None:
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.metrics: Dict[str, int] = {
+            "total_calls": 0,
+            "successes": 0,
+            "failures": 0,
+            "recoveries": 0,
+        }
+
+    def protect(self, module_name: str) -> Callable:
+        def decorator(func: Callable) -> Callable:
+            @wraps(func)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                self.metrics["total_calls"] += 1
+                attempt = 0
+                last_error: Exception | None = None
+
+                while attempt <= self.max_retries:
+                    try:
+                        result = func(*args, **kwargs)
+                        self.metrics["successes"] += 1
+                        if attempt > 0:
+                            self.metrics["recoveries"] += 1
+                        return result
+                    except Exception as exc:
+                        last_error = exc
+                        attempt += 1
+                        if attempt <= self.max_retries:
+                            time.sleep(self.base_delay * (2 ** (attempt - 1)))
+
+                self.metrics["failures"] += 1
+                raise RuntimeError(
+                    f"[SelfHealingCore] Módulo '{module_name}' aislado tras "
+                    f"{self.max_retries} reintentos. Error: {last_error}"
+                ) from last_error
+
+            return wrapper
+
+        return decorator
+
+
+core = SelfHealingCore()
+
+
+class AuditorIntegridadSHA256:
+    """
+    Genera huellas SHA-256 deterministas sobre estructuras JSON ordenadas
+    y código fuente para garantizar reproducibilidad sin alteraciones.
+    """
+
+    @staticmethod
+    def canonicalize(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {
+                str(k): AuditorIntegridadSHA256.canonicalize(v)
+                for k, v in sorted(obj.items(), key=lambda item: str(item[0]))
+            }
+        if isinstance(obj, (list, tuple)):
+            return [AuditorIntegridadSHA256.canonicalize(v) for v in obj]
+        if isinstance(obj, float):
+            if math.isnan(obj):
+                return "NaN"
+            if math.isinf(obj):
+                return "Infinity" if obj > 0 else "-Infinity"
+            if obj == 0.0:
+                return 0.0
+        return obj
+
+    @classmethod
+    def calcular_huella(cls, payload: Dict[str, Any]) -> str:
+        canon = cls.canonicalize(payload)
+        serializado = json.dumps(canon, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(serializado.encode("utf-8")).hexdigest()
+
+
+class MotorMatematicoAtenea:
+    """
+    Motor matemático determinista usado como referencia de exactitud
+    (Ground Truth) y benchmark de rendimiento para código generado.
+    """
+
+    @staticmethod
+    @core.protect("criba_vectorizada")
+    def criba_vectorizada(n: int) -> int:
+        if n < 2:
+            return 0
+        sieve = np.ones(n + 1, dtype=bool)
+        sieve[0:2] = False
+        limite = math.isqrt(n)
+        for i in range(2, limite + 1):
+            if sieve[i]:
+                sieve[i * i :: i] = False
+        return int(np.sum(sieve))
+
+    @staticmethod
+    @core.protect("criba_python_base")
+    def criba_python_base(n: int) -> int:
+        if n < 2:
+            return 0
+        es_primo = bytearray([1]) * (n + 1)
+        es_primo[0:2] = b"\x00\x00"
+        limite = math.isqrt(n)
+        for i in range(2, limite + 1):
+            if es_primo[i]:
+                es_primo[i * i : n + 1 : i] = b"\x00" * (((n - i * i) // i) + 1)
+        return sum(es_primo)
+
+    @staticmethod
+    @core.protect("calcular_psi_explicito")
+    def calcular_psi_explicito(x_val: int, num_ceros: int = 15) -> float:
+        """
+        Calcula la función de Chebyshev psi(x) mediante la fórmula explícita
+        de Riemann-von Mangoldt sumando los primeros `num_ceros` pares
+        conjugados de ceros no triviales de la función Zeta.
+        """
+        if x_val <= 1:
+            raise ValueError("x debe ser mayor que 1 para evaluar psi(x).")
+
+        x = mp.mpf(x_val)
+        suma_ceros = mp.mpf("0")
+        for k in range(1, num_ceros + 1):
+            rho = mp.zetazero(k)
+            termino = (x**rho) / rho
+            suma_ceros += 2 * mp.re(termino)
+
+        psi_x = (
+            x
+            - suma_ceros
+            - mp.log(2 * mp.pi)
+            - mp.mpf("0.5") * mp.log(1 - x ** (-2))
+        )
+        return float(mp.re(psi_x))
+
+    @core.protect("auditar_schoenfeld")
+    def auditar_schoenfeld(self, x_val: int, pi_x_observado: int) -> Dict[str, Any]:
+        """
+        Verifica el resultado de conteo de primos contra Li(x) y la cota
+        de Schoenfeld (válida para x >= 2657 bajo RH).
+        """
+        if x_val < 2657:
+            raise ValueError("La cota de Schoenfeld aplica para x >= 2657.")
+
+        x_mp = mp.mpf(x_val)
+        li_x = mp.li(x_mp)
+        error_real = abs(mp.mpf(pi_x_observado) - li_x)
+        cota_maxima = (mp.sqrt(x_mp) * mp.log(x_mp)) / (8 * mp.pi)
+        cumple = bool(error_real < cota_maxima)
+
+        return {
+            "x": x_val,
+            "pi_x": pi_x_observado,
+            "li_x": float(li_x),
+            "error_real": float(error_real),
+            "cota_schoenfeld": float(cota_maxima),
+            "cumple_cota": cumple,
+        }
+
+
+class PipelineAutoMejoraProgramacion:
+    """
+    Evalúa implementaciones de código reales antes de aprobarlas en ATENEA-OS:
+    1) Valida sintaxis AST.
+    2) Mide tiempo de CPU y pico de memoria RAM.
+    3) Comprueba exactitud contra el MotorMatematicoAtenea.
+    4) Selecciona la mejor implementación y sella el resultado con SHA-256.
+    """
+
+    def __init__(self, motor: MotorMatematicoAtenea) -> None:
+        self.motor = motor
+        self.ledger: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def validar_ast(func: Callable) -> bool:
+        codigo = inspect.getsource(func)
+        # Elimina indentación común si es método de clase
+        lineas = codigo.splitlines()
+        min_indent = min(
+            (len(l) - len(l.lstrip()) for l in lineas if l.strip()),
+            default=0,
+        )
+        codigo_limpio = "\n".join(l[min_indent:] for l in lineas)
+        ast.parse(codigo_limpio)
+        return True
+
+    def evaluar_candidato(
+        self,
+        nombre: str,
+        func: Callable[[int], int],
+        x_prueba: int,
+        valor_referencia: int,
+    ) -> Dict[str, Any]:
+        self.validar_ast(func)
+
+        tracemalloc.start()
+        inicio = time.perf_counter()
+        resultado = func(x_prueba)
+        duracion_seg = time.perf_counter() - inicio
+        _, pico_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        if resultado != valor_referencia:
+            raise IntegrityAuditError(
+                f"Candidato '{nombre}' rechazado: dio {resultado}, "
+                f"se esperaba {valor_referencia}."
+            )
+
+        auditoria_rh = self.motor.auditar_schoenfeld(x_prueba, resultado)
+        if not auditoria_rh["cumple_cota"]:
+            raise IntegrityAuditError(
+                f"Candidato '{nombre}' violó la cota de Schoenfeld."
+            )
+
+        registro = {
+            "candidato": nombre,
+            "x_prueba": x_prueba,
+            "resultado_exacto": resultado,
+            "tiempo_seg": round(duracion_seg, 6),
+            "pico_memoria_kb": round(pico_bytes / 1024, 2),
+            "auditoria_schoenfeld": auditoria_rh,
+        }
+        registro["sha256"] = AuditorIntegridadSHA256.calcular_huella(registro)
+        self.ledger.append(registro)
+        return registro
+
+    def seleccionar_mejor_implementacion(
+        self,
+        candidatos: Dict[str, Callable[[int], int]],
+        x_prueba: int,
+    ) -> Dict[str, Any]:
+        # Referencia base de verdad calculada con la criba vectorizada
+        referencia = self.motor.criba_vectorizada(x_prueba)
+        psi_val = self.motor.calcular_psi_explicito(x_prueba, num_ceros=15)
+
+        evaluaciones: List[Dict[str, Any]] = []
+        for nombre, funcion in candidatos.items():
+            evaluacion = self.evaluar_candidato(nombre, funcion, x_prueba, referencia)
+            evaluaciones.append(evaluacion)
+
+        # Criterio objetivo: menor tiempo de ejecución, desempatando por menor RAM
+        ganador = min(
+            evaluaciones,
+            key=lambda e: (e["tiempo_seg"], e["pico_memoria_kb"]),
+        )
+
+        reporte_final = {
+            "x_prueba": x_prueba,
+            "psi_x_referencia": round(psi_val, 6),
+            "ganador": ganador["candidato"],
+            "metricas_ganador": ganador,
+            "todas_las_evaluaciones": evaluaciones,
+            "self_healing_stats": core.metrics,
+        }
+        reporte_final["sello_global_sha256"] = AuditorIntegridadSHA256.calcular_huella(
+            reporte_final
+        )
+        return reporte_final
+
+
+if __name__ == "__main__":
+    motor = MotorMatematicoAtenea()
+    pipeline = PipelineAutoMejoraProgramacion(motor)
+
+    # Comparamos dos algoritmos reales de conteo de primos para x = 1,000,000
+    candidatos_reales = {
+        "criba_python_bytearray": motor.criba_python_base,
+        "criba_numpy_vectorizada": motor.criba_vectorizada,
+    }
+
+    reporte = pipeline.seleccionar_mejor_implementacion(
+        candidatos=candidatos_reales,
+        x_prueba=1_000_000,
+    )
+    print(json.dumps(reporte, indent=2, ensure_ascii=False))
