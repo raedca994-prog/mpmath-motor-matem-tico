@@ -1,0 +1,283 @@
+ **fórmula explícita de Riemann** y la **auditoría de Schoenfeld** en un solo script coherente y eficiente
+
+
+import math
+import time
+from itertools import compress
+
+from mpmath import mp
+
+mp.dps = 50
+
+
+def criba(n):
+    """
+    Criba de Eratóstenes con bytearray.
+    Devuelve un bytearray donde s[k] == 1 si k es primo, 0 si no.
+    Tiempo: O(n log log n). Espacio: O(n) bytes (1 byte por entero).
+    """
+    if n < 2:
+        return bytearray(max(n + 1, 0))
+    s = bytearray([1]) * (n + 1)
+    s[0] = 0
+    s[1] = 0
+    for i in range(2, math.isqrt(n) + 1):
+        if s[i]:
+            s[i * i : n + 1 : i] = bytes(len(range(i * i, n + 1, i)))
+    return s
+
+
+def pi_desde_criba(s, x):
+    """Cuenta los primos <= x reutilizando una criba existente (sin copia)."""
+    n = int(x)
+    if n < 2:
+        return 0
+    return sum(memoryview(s)[: n + 1])
+
+
+def psi_desde_criba(s, x):
+    """
+    Función exacta de Chebyshev psi(x) = sum_{p^k <= x} log p
+    reutilizando una criba existente (sin copia).
+    """
+    n = int(x)
+    if n < 2:
+        return 0.0
+    mv = memoryview(s)[: n + 1]
+
+    def terminos():
+        for p in compress(range(n + 1), mv):
+            lp = math.log(p)
+            pk = p
+            while pk <= n:
+                yield lp
+                pk *= p
+
+    return math.fsum(terminos())
+
+
+def pi_exacto(x):
+    """Cuenta los primos <= x."""
+    n = int(x)
+    return pi_desde_criba(criba(n), n)
+
+
+def psi_exacto(x):
+    """Función exacta de Chebyshev psi(x) = sum_{p^k <= x} log p."""
+    n = int(x)
+    return psi_desde_criba(criba(n), n)
+
+
+def mobius(m):
+    """Calcula la función de Möbius mu(m) para m >= 1."""
+    if m == 1:
+        return 1
+    factores = 0
+    d = 2
+    temp = m
+    while d * d <= temp:
+        if temp % d == 0:
+            temp //= d
+            if temp % d == 0:
+                return 0
+            factores += 1
+        d += 1
+    if temp > 1:
+        factores += 1
+    return -1 if (factores % 2) else 1
+
+
+def obtener_ceros_zeta(k_zeros):
+    """Precalcula los primeros k_zeros ceros no triviales de zeta(s) en Im(s) > 0."""
+    if k_zeros <= 0:
+        return []
+    return [mp.zetazero(k) for k in range(1, k_zeros + 1)]
+
+
+def j_riemann_con_ceros(y, ceros):
+    """
+    Evalúa J_K(y) de la fórmula explícita de Riemann usando K pares de ceros:
+    J_K(y) = li(y) - sum_{k=1}^K 2 Re(Ei(rho_k * ln y)) - ln(2) + int_y^inf dt / (t(t^2-1)ln t)
+    Válida para y >= 2.
+    """
+    ym = mp.mpf(y)
+    log_y = mp.log(ym)
+    termino_li = mp.li(ym)
+    suma_ceros = (
+        mp.fsum(2 * mp.re(mp.ei(rho * log_y)) for rho in ceros) if ceros else mp.mpf(0)
+    )
+    cola_integral = mp.quad(
+        lambda u: 1 / (u * (mp.exp(2 * u) - 1)),
+        [log_y, mp.inf],
+    )
+    return termino_li - suma_ceros - mp.log(2) + cola_integral
+
+
+def pi_con_ceros_zeta(x, ceros):
+    """
+    Aproximación de pi(x) mediante la fórmula explícita de Riemann con inversión de Möbius:
+    pi_K(x) = sum_{m=1}^{floor(log2 x)} (mu(m) / m) * J_K(x^(1/m))
+    """
+    n = int(x)
+    if n < 2:
+        return mp.mpf(0)
+    m_max = n.bit_length() - 1
+    xm = mp.mpf(n)
+    total = mp.mpf(0)
+    for m in range(1, m_max + 1):
+        mu = mobius(m)
+        if mu == 0:
+            continue
+        raiz = mp.root(xm, m)
+        total += (mp.mpf(mu) / m) * j_riemann_con_ceros(raiz, ceros)
+    return total
+
+
+def psi_con_ceros_zeta(x, ceros):
+    """
+    Fórmula explícita de von Mangoldt para la función de Chebyshev psi(x):
+    psi_K(x) = x - sum_{k=1}^K 2 Re(x^rho_k / rho_k) - ln(2*pi) - 0.5*ln(1 - x^-2)
+    """
+    xm = mp.mpf(x)
+    suma_ceros = (
+        mp.fsum(2 * mp.re(mp.power(xm, rho) / rho) for rho in ceros)
+        if ceros
+        else mp.mpf(0)
+    )
+    return (
+        xm
+        - suma_ceros
+        - mp.log(2 * mp.pi)
+        - mp.mpf("0.5") * mp.log(1 - xm ** (-2))
+    )
+
+
+def auditar_schoenfeld(x, s=None, ceros=None, incluir_psi=True):
+    """
+    Compara pi(x) con li(x), con la cota de Schoenfeld (condicional a RH)
+    y opcionalmente con las fórmulas explícitas usando ceros de zeta(s).
+
+    La cota |pi(x) - li(x)| < sqrt(x) log(x) / (8 pi) es válida para x >= 2657
+    y es un resultado CONDICIONAL a la Hipótesis de Riemann. Verificarla en
+    valores concretos de x no demuestra la hipótesis de Riemann.
+    """
+    n = int(x)
+    if n < 2:
+        raise ValueError("x debe ser >= 2")
+
+    t0 = time.perf_counter()
+    if s is None:
+        s = criba(n)
+    pi_x = pi_desde_criba(s, n)
+    psi_x = psi_desde_criba(s, n) if incluir_psi else None
+    dt = time.perf_counter() - t0
+
+    xm = mp.mpf(n)
+    li_x = mp.li(xm)
+    error_li = abs(mp.mpf(pi_x) - li_x)
+
+    cota = None
+    cumple = None
+    if n >= 2657:
+        cota = mp.sqrt(xm) * mp.log(xm) / (8 * mp.pi)
+        cumple = error_li < cota
+
+    pi_zeta = None
+    error_zeta = None
+    psi_zeta = None
+    if ceros is not None:
+        pi_zeta = pi_con_ceros_zeta(n, ceros)
+        error_zeta = abs(mp.mpf(pi_x) - pi_zeta)
+        if incluir_psi:
+            psi_zeta = psi_con_ceros_zeta(n, ceros)
+
+    return {
+        "x": n,
+        "pi": pi_x,
+        "li": li_x,
+        "error_li": error_li,
+        "cota_schoenfeld": cota,
+        "cumple_cota_condicional_RH": cumple,
+        "pi_zeta": pi_zeta,
+        "error_zeta": error_zeta,
+        "psi": psi_x,
+        "psi_zeta": psi_zeta,
+        "segundos": dt,
+    }
+
+
+def tabla_potencias_10(exp_min=3, exp_max=8, k_zeros=30, incluir_psi=True):
+    """
+    Genera la tabla comparativa desde 10^exp_min hasta 10^exp_max
+    reutilizando una única criba hasta 10^exp_max y K pares de ceros de zeta.
+    """
+    limite = 10**exp_max
+
+    t_criba_0 = time.perf_counter()
+    s = criba(limite)
+    t_criba = time.perf_counter() - t_criba_0
+
+    t_ceros_0 = time.perf_counter()
+    ceros = obtener_ceros_zeta(k_zeros)
+    t_ceros = time.perf_counter() - t_ceros_0
+
+    print(
+        f"Criba hasta 10^{exp_max} ({limite:,}) generada en {t_criba:.3f} s | "
+        f"{k_zeros} ceros de zeta precalculados en {t_ceros:.3f} s"
+    )
+    print(
+        "Aviso: la cota de Schoenfeld es condicional a RH; las aproximaciones "
+        "con K ceros finitos oscilan alrededor del valor exacto.\n"
+    )
+
+    encabezado = (
+        f"{'x':>11} | {'pi(x)':>10} | {'li(x)':>13} | {'|pi-li|':>10} | "
+        f"{'Cota Sch.':>10} | {'RH?':>5} | "
+        f"{f'R_{k_zeros}(x) ceros':>14} | {'|pi-R_K|':>10}"
+    )
+    if incluir_psi:
+        encabezado += f" | {'|psi-psi_K|':>11}"
+    print(encabezado)
+    print("-" * len(encabezado))
+
+    resultados = []
+    for exp in range(exp_min, exp_max + 1):
+        x = 10**exp
+        r = auditar_schoenfeld(x, s=s, ceros=ceros, incluir_psi=incluir_psi)
+        resultados.append(r)
+
+        cota_str = mp.nstr(r["cota_schoenfeld"], 7) if r["cota_schoenfeld"] is not None else "N/A"
+        rh_str = (
+            "Sí" if r["cumple_cota_condicional_RH"] is True
+            else ("No" if r["cumple_cota_condicional_RH"] is False else "N/A")
+        )
+        linea = (
+            f"{f'10^{exp}':>11} | "
+            f"{r['pi']:>10,} | "
+            f"{mp.nstr(r['li'], 10):>13} | "
+            f"{mp.nstr(r['error_li'], 7):>10} | "
+            f"{cota_str:>10} | "
+            f"{rh_str:>5} | "
+            f"{mp.nstr(r['pi_zeta'], 10):>14} | "
+            f"{mp.nstr(r['error_zeta'], 7):>10}"
+        )
+        if incluir_psi:
+            err_psi = abs(mp.mpf(r["psi"]) - r["psi_zeta"])
+            linea += f" | {mp.nstr(err_psi, 7):>11}"
+        print(linea)
+
+    return resultados
+
+
+if __name__ == "__main__":
+
+1.  **Gestión de Memoria y Rendimiento**: 
+    *   La reutilización de la `criba` mediante `memoryview` es una decisión óptima. Al evitar copias innecesarias de `bytearray`, minimizas la presión sobre el recolector de basura de Python al iterar entre $10^3$ y $10^8$.
+    *   La criba de Eratóstenes, aunque $\mathcal{O}(n \log \log n)$, es extremadamente rápida para $10^8$ en hardware moderno, lo que permite que el cuello de botella real sea el cálculo de `mp.zetazero` y las sumatorias de la fórmula explícita.
+
+2.  **Integración de la Fórmula Explícita (Riemann-von Mangoldt)**:
+    *   El método `pi_con_ceros_zeta` utilizando la inversión de Möbius sobre la función $J(x)$ es la implementación correcta y estándar para aproximar $\pi(x)$ mediante ceros no triviales.
+    *   El manejo de los términos de error (la integral `cola_integral` en `j_riemann_con_ceros`) muestra un dominio profundo de la aproximación analítica.
+
+3.  **Verificación de la Condición RH**:
+    *   La tabla es autoexplicativa. El hecho de que la columna `RH?` se marque como `Sí` para valores grandes es la confirmación numérica de que, bajo la Hipótesis de Riemann, el error entre $\pi(x)$ y $\text{li}(x)$ está efectivamente acotado por la función de Schoenfeld.
