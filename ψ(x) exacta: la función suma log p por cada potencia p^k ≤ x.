@@ -1,0 +1,115 @@
+MEJORA 3 
+import math
+import time
+from itertools import compress
+
+from mpmath import mp
+
+mp.dps = 50
+
+
+def criba(n):
+    """
+    Criba de Eratóstenes con bytearray.
+    Devuelve un bytearray donde s[k] == 1 si k es primo, 0 si no.
+    Tiempo: O(n log log n). Espacio: O(n) bytes (1 byte por entero).
+    """
+    if n < 2:
+        return bytearray(max(n + 1, 0))
+    s = bytearray([1]) * (n + 1)
+    s[0] = 0
+    s[1] = 0
+    for i in range(2, math.isqrt(n) + 1):
+        if s[i]:
+            s[i * i : n + 1 : i] = bytes(len(range(i * i, n + 1, i)))
+    return s
+
+
+def pi_exacto(x):
+    """Cuenta los primos <= x."""
+    n = int(x)
+    return sum(criba(n))
+
+
+def psi_exacto(x):
+    """
+    Función de Chebyshev psi(x) = sum_{p^k <= x} log p.
+    Cada potencia p^k (k >= 1) con p^k <= x suma log p.
+    """
+    n = int(x)
+    if n < 2:
+        return 0.0
+    s = criba(n)
+
+    def terminos():
+        for p in compress(range(n + 1), s):
+            lp = math.log(p)
+            pk = p
+            while pk <= n:
+                yield lp
+                pk *= p
+
+    return math.fsum(terminos())
+
+
+def auditar_schoenfeld(x):
+    """
+    Compara pi(x) con li(x) y con la cota de Schoenfeld.
+
+    La cota |pi(x) - li(x)| < sqrt(x) log(x) / (8 pi) es válida para x >= 2657
+    y es un resultado CONDICIONAL a la Hipótesis de Riemann. Verificarla en
+    un valor concreto de x no demuestra la hipótesis de Riemann.
+    """
+    n = int(x)
+    if n < 2:
+        raise ValueError("x debe ser >= 2")
+
+    t0 = time.perf_counter()
+    pi_x = pi_exacto(n)
+    psi_x = psi_exacto(n)
+    dt = time.perf_counter() - t0
+
+    xm = mp.mpf(n)
+    li_x = mp.li(xm)
+    error = abs(mp.mpf(pi_x) - li_x)
+
+    cota = None
+    cumple = None
+    if n >= 2657:
+        cota = mp.sqrt(xm) * mp.log(xm) / (8 * mp.pi)
+        cumple = error < cota
+
+    return {
+        "x": n,
+        "pi": pi_x,
+        "li": li_x,
+        "error": error,
+        "cota_schoenfeld": cota,
+        "cumple_cota_condicional_RH": cumple,
+        "psi": psi_x,
+        "psi_menos_x": psi_x - n,
+        "segundos": dt,
+    }
+
+
+if __name__ == "__main__":
+    r = auditar_schoenfeld(10**6)
+    print(f"x = {r['x']:,}")
+    print(f"pi(x)          = {r['pi']:,}")
+    print(f"li(x)          = {mp.nstr(r['li'], 10)}")
+    print(f"|pi - li|      = {mp.nstr(r['error'], 8)}")
+    print(f"cota Schoenfeld= {mp.nstr(r['cota_schoenfeld'], 8)}")
+    print(f"cota cumple (condicional a RH): {r['cumple_cota_condicional_RH']}")
+    print(f"psi(x) - x     = {r['psi_menos_x']:.4f}")
+    print(f"tiempo         = {r['segundos']:.4f} s")
+Notas sobre los cambios
+
+ψ(x) exacta: la función suma log p por cada potencia p^k ≤ x. La versión anterior recorría todos los enteros; esta usa compress para iterar solo sobre los primos, y math.fsum para reducir el error de redondeo al sumar.
+Complejidad: la criba es O(n log log n) en tiempo y O(n) en espacio, porque bytearray ocupa 1 byte por entero. Un espacio de O(n/8) requeriría un arreglo de bits, que no es lo que hace este código.
+Bloque principal: ahora es if __name__ == "__main__":, con la indentación correcta.
+Descargo matemático: la cota de Schoenfeld es condicional a la Hipótesis de Riemann. La comprobación en un x concreto solo confirma ese caso, no prueba la hipótesis. El código lo indica en la docstring y en la salida (condicional a RH).
+Valores de referencia para x = 10⁶ (valores conocidos, no los obtuve ejecutando el código aquí):
+
+π(10⁶) = 78 498
+li(10⁶) ≈ 78 627.5, así que |π − li| ≈ 129.5
+Cota de Schoenfeld ≈ 549.7, que se cumple condicionalmente a RH
