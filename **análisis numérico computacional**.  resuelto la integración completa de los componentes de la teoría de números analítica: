@@ -1,0 +1,281 @@
+import math
+import time
+from itertools import compress
+
+from mpmath import mp
+
+mp.dps = 50
+
+
+def criba(n):
+    """
+    Criba de Eratóstenes con bytearray.
+    Devuelve un bytearray donde s[k] == 1 si k es primo, 0 si no.
+    Tiempo: O(n log log n). Espacio: O(n) bytes (1 byte por entero).
+    """
+    if n < 2:
+        return bytearray(max(n + 1, 0))
+    s = bytearray([1]) * (n + 1)
+    s[0] = 0
+    s[1] = 0
+    for i in range(2, math.isqrt(n) + 1):
+        if s[i]:
+            s[i * i : n + 1 : i] = bytes(len(range(i * i, n + 1, i)))
+    return s
+
+
+def pi_desde_criba(s, x):
+    """Cuenta los primos <= x reutilizando una criba existente (conteo en C)."""
+    n = int(x)
+    if n < 2:
+        return 0
+    return s.count(b"\x01", 0, n + 1)
+
+
+def psi_desde_criba(s, x):
+    """
+    Función exacta de Chebyshev psi(x) = sum_{p^k <= x} log p
+    reutilizando una criba existente sin copiar memoria.
+    """
+    n = int(x)
+    if n < 2:
+        return 0.0
+    mv = memoryview(s)[: n + 1]
+
+    def terminos():
+        for p in compress(range(n + 1), mv):
+            lp = math.log(p)
+            pk = p
+            while pk <= n:
+                yield lp
+                pk *= p
+
+    return math.fsum(terminos())
+
+
+def pi_exacto(x):
+    """Cuenta los primos <= x."""
+    n = int(x)
+    return pi_desde_criba(criba(n), n)
+
+
+def psi_exacto(x):
+    """Función exacta de Chebyshev psi(x) = sum_{p^k <= x} log p."""
+    n = int(x)
+    return psi_desde_criba(criba(n), n)
+
+
+def mobius(m):
+    """Calcula la función de Möbius mu(m) para m >= 1."""
+    if m == 1:
+        return 1
+    factores = 0
+    d = 2
+    temp = m
+    while d * d <= temp:
+        if temp % d == 0:
+            temp //= d
+            if temp % d == 0:
+                return 0
+            factores += 1
+        d += 1
+    if temp > 1:
+        factores += 1
+    return -1 if (factores % 2) else 1
+
+
+def obtener_ceros_zeta(k_zeros):
+    """Precalcula los primeros k_zeros ceros no triviales de zeta(s) en Im(s) > 0."""
+    if k_zeros <= 0:
+        return []
+    return [mp.zetazero(k) for k in range(1, k_zeros + 1)]
+
+
+def j_riemann_desglosado(y, ceros):
+    """
+    Evalúa J_0(y) (sin ceros) y J_K(y) (con K pares de ceros) en una sola pasada:
+      J_0(y) = li(y) - ln(2) + int_y^inf dt / (t(t^2-1)ln t)
+      J_K(y) = J_0(y) - sum_{k=1}^K 2 Re(Ei(rho_k * ln y))
+    Válida para y >= 2.
+    """
+    ym = mp.mpf(y)
+    log_y = mp.log(ym)
+    termino_li = mp.li(ym)
+    cola_integral = mp.quad(
+        lambda u: 1 / (u * (mp.exp(2 * u) - 1)),
+        [log_y, mp.inf],
+    )
+    j0 = termino_li - mp.log(2) + cola_integral
+    suma_ceros = (
+        mp.fsum(2 * mp.re(mp.ei(rho * log_y)) for rho in ceros) if ceros else mp.mpf(0)
+    )
+    return j0, j0 - suma_ceros
+
+
+def pi_riemann_comparado(x, ceros):
+    """
+    Calcula simultáneamente:
+      - R_0(x): fórmula explícita de Riemann sin ceros de zeta (K = 0)
+      - R_K(x): fórmula explícita de Riemann con K pares de ceros de zeta
+    Mediante inversión de Möbius:
+      R(x) = sum_{m=1}^{floor(log2 x)} (mu(m) / m) * J(x^(1/m))
+    """
+    n = int(x)
+    if n < 2:
+        return mp.mpf(0), mp.mpf(0)
+    m_max = n.bit_length() - 1
+    xm = mp.mpf(n)
+    r0 = mp.mpf(0)
+    rk = mp.mpf(0)
+    for m in range(1, m_max + 1):
+        mu = mobius(m)
+        if mu == 0:
+            continue
+        peso = mp.mpf(mu) / m
+        raiz = mp.root(xm, m)
+        j0, jk = j_riemann_desglosado(raiz, ceros)
+        r0 += peso * j0
+        rk += peso * jk
+    return r0, rk
+
+
+def psi_riemann_comparado(x, ceros):
+    """
+    Calcula simultáneamente la fórmula explícita de von Mangoldt para psi(x):
+      - psi_0(x) sin ceros: x - ln(2*pi) - 0.5*ln(1 - x^-2)
+      - psi_K(x) con K pares de ceros: psi_0(x) - sum_{k=1}^K 2 Re(x^rho_k / rho_k)
+    """
+    xm = mp.mpf(x)
+    psi0 = xm - mp.log(2 * mp.pi) - mp.mpf("0.5") * mp.log(1 - xm ** (-2))
+    suma_ceros = (
+        mp.fsum(2 * mp.re(mp.power(xm, rho) / rho) for rho in ceros)
+        if ceros
+        else mp.mpf(0)
+    )
+    return psi0, psi0 - suma_ceros
+
+
+def auditar_schoenfeld(x, s=None, ceros=None, incluir_psi=True):
+    """
+    Compara pi(x) con li(x), con la cota de Schoenfeld (condicional a RH)
+    y con las fórmulas explícitas R_0(x) y R_K(x) (sin y con ceros de zeta).
+
+    La cota |pi(x) - li(x)| < sqrt(x) log(x) / (8 pi) es válida para x >= 2657
+    y es un resultado CONDICIONAL a la Hipótesis de Riemann. Verificarla en
+    valores concretos de x no demuestra la hipótesis de Riemann.
+    """
+    n = int(x)
+    if n < 2:
+        raise ValueError("x debe ser >= 2")
+
+    t0 = time.perf_counter()
+    if s is None:
+        s = criba(n)
+    pi_x = pi_desde_criba(s, n)
+    psi_x = psi_desde_criba(s, n) if incluir_psi else None
+    dt = time.perf_counter() - t0
+
+    xm = mp.mpf(n)
+    li_x = mp.li(xm)
+    error_li = abs(mp.mpf(pi_x) - li_x)
+
+    cota = None
+    cumple = None
+    if n >= 2657:
+        cota = mp.sqrt(xm) * mp.log(xm) / (8 * mp.pi)
+        cumple = error_li < cota
+
+    r0 = None
+    rk = None
+    error_r0 = None
+    error_rk = None
+    psi0 = None
+    psik = None
+    error_psi0 = None
+    error_psik = None
+
+    if ceros is not None:
+        r0, rk = pi_riemann_comparado(n, ceros)
+        error_r0 = abs(mp.mpf(pi_x) - r0)
+        error_rk = abs(mp.mpf(pi_x) - rk)
+        if incluir_psi:
+            psi0, psik = psi_riemann_comparado(n, ceros)
+            error_psi0 = abs(mp.mpf(psi_x) - psi0)
+            error_psik = abs(mp.mpf(psi_x) - psik)
+
+    return {
+        "x": n,
+        "pi": pi_x,
+        "li": li_x,
+        "error_li": error_li,
+        "cota_schoenfeld": cota,
+        "cumple_cota_condicional_RH": cumple,
+        "r0": r0,
+        "rk": rk,
+        "error_r0": error_r0,
+        "error_rk": error_rk,
+        "psi": psi_x,
+        "psi0": psi0,
+        "psik": psik,
+        "error_psi0": error_psi0,
+        "error_psik": error_psik,
+        "segundos": dt,
+    }
+
+
+def tabla_potencias_10(exp_min=3, exp_max=8, k_zeros=50, incluir_psi=True):
+    """
+    Genera la tabla comparativa desde 10^exp_min hasta 10^exp_max
+    reutilizando una única criba hasta 10^exp_max y comparando:
+      - li(x) y cota de Schoenfeld (condicional a RH)
+      - R_0(x) (Riemann sin ceros) vs R_K(x) (Riemann con K ceros de zeta)
+      - psi_0(x) vs psi_K(x) para la función de Chebyshev
+    """
+    limite = 10**exp_max
+
+    t_criba_0 = time.perf_counter()
+    s = criba(limite)
+    t_criba = time.perf_counter() - t_criba 
+
+
+Mejoras técnicas aplicadas paso a paso
+1.
+Aislamiento exacto de $R_0(x)$ y $R_K(x)$ sin duplicar cálculos:
+
+Se calcula una sola vez el término base $J_0(y) = \operatorname{li}(y) - \ln 2 + \int_y^\infty \frac{dt}{t(t^2-1)\ln t}$ para cada raíz $y = x^{1/m}$ y luego se resta la suma oscilatoria de los $K$ ceros $\sum_{k=1}^K 2\operatorname{Re}(\operatorname{Ei}(\rho_k \ln y))$. Así obtenemos en el mismo paso $R_0(x)$ (sin ceros) y $R_K(x)$ (con $K$ ceros) sin evaluar dos veces mp.li ni mp.quad.
+
+2.
+Conteo de primos en C con `bytearray.count`:
+
+En pi_desde_criba, reemplazamos sum(memoryview(s)[: n + 1]) por s.count(b"\x01", 0, n + 1). Al ejecutarse directamente en C, reduce drásticamente el tiempo de conteo cuando $x = 10^8$.
+
+3.
+Comparativa de error para $\pi(x)$ y $\psi(x)$:
+
+La tabla ahora permite ver lado a lado:
+
+▸
+$|\pi(x) - \operatorname{li}(x)|$ y la cota condicional de Schoenfeld.
+
+▸
+$|\pi(x) - R_0(x)|$ (que ya corrige el sesgo sistemático $\pi(x) < \operatorname{li}(x)$ mediante los términos de Möbius, pero sin oscilaciones).
+
+▸
+$|\pi(x) - R_K(x)|$ (agregando las frecuencias de los ceros de $\zeta$).
+
+▸
+$|\psi(x) - \psi_0(x)|$ frente a $|\psi(x) - \psi_K(x)|$ para observar el mismo efecto en la función de Chebyshev.
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
